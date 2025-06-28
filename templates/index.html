@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Economic Indicators</title>
+</head>
+<body>
+    <h1>Key US Economic Indicators</h1>
+    <form action="/" method="get">
+        <label for="time_range">Select Time Range:</label>
+        <select name="time_range" id="time_range">
+            <option value="3m" {% if selected_time_range == '3m' %}selected{% endif %}>3 Months</option>
+            <option value="1y" {% if selected_time_range == '1y' %}selected{% endif %}>1 Year</option>
+            <option value="3y" {% if selected_time_range == '3y' %}selected{% endif %}>3 Years</option>
+            <option value="5y" {% if selected_time_range == '5y' %}selected{% endif %}>5 Years</option>
+            <option value="10y" {% if selected_time_range == '10y' %}selected{% endif %}>10 Years</option>
+            <option value="20y" {% if selected_time_range == '20y' %}selected{% endif %}>20 Years</option>
+        </select>
+        <input type="submit" value="Update">
+    </form>
+    <br>
+    <img src="data:image/png;base64,{{ plot_url }}" alt="Economic Indicators Plot">
+</body>
+</html>
