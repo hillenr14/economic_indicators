@@ -41,7 +41,13 @@ INDICATORS = {
     "20-Year Treasury Yield": "DGS20",
     "M2 Money Supply": "M2SL",
     "Corporate Profits": "CP",
-    "Consumer Sentiment": "UMCSENT"
+    "Consumer Sentiment": "UMCSENT",
+    "Initial Jobless Claims": "IC4WSA",
+    "Retail Sales": "RSXFS",
+    "Industrial Production": "INDPRO",
+    "Housing Starts": "HOUST",
+    "ISM Manufacturing PMI": "NAPM",
+    "Producer Price Index": "PPIACO"
 }
 
 
@@ -154,7 +160,7 @@ def refresh_data_in_background():
 
 def get_data_from_db(time_range):
   conn = mysql.connector.connect(
-    host=DB_HOST, user=DB_USER, password=DB_PASSWORD, database=DB_NAME)
+      host=DB_HOST, user=DB_USER, password=DB_PASSWORD, database=DB_NAME)
   cursor = conn.cursor()
 
   start_date = get_start_date(time_range)
@@ -162,10 +168,16 @@ def get_data_from_db(time_range):
   data_frames = {}
   for name in INDICATORS.keys():
     cursor.execute(
-      "SELECT date, value FROM economic_data WHERE indicator_name = %s AND date >= %s", (name, start_date))
+        "SELECT date, value FROM economic_data WHERE indicator_name = %s AND date >= %s", (name, start_date))
     data = cursor.fetchall()
     if data:
-      df = pd.DataFrame(data, columns=['date', 'value']).set_index('date')
+      df = pd.DataFrame(data, columns=['date', 'value'])
+      df['date'] = pd.to_datetime(df['date'])
+      df = df.set_index('date')
+      if time_range in ['3y', '5y'] and (name == "S&P 500 Index" or "Treasury Yield" in name):
+        df = df.resample('W').last()
+      if time_range in ['10y', '20y'] and (name == "S&P 500 Index" or "Treasury Yield" in name):
+        df = df.resample('M').last()
       data_frames[name] = df
 
   cursor.close()
@@ -236,19 +248,26 @@ def index():
         "Inflation Rate",
         "S&P 500 Index",
         "Treasury Yields",
-        "Consumer Sentiment",
-        "Corporate Profits",
-        "M2 Money Supply",
-        "Trade Balance",
         "Unemployment Rate",
-        "Federal Funds Rate"
+        "Initial Jobless Claims",
+        "Corporate Profits",
+        "Industrial Production",
+        "Consumer Sentiment",
+        "Retail Sales",
+        "Federal Funds Rate",
+        "M2 Money Supply",
+        "ISM Manufacturing PMI",
+        "Producer Price Index"
+        "Housing Starts",
+        "Trade Balance",
     ]
 
     # Filter and order data_frames based on PLOT_ORDER
     ordered_data_frames = []
     for indicator_name in PLOT_ORDER:
-        if indicator_name in data_frames and data_frames[indicator_name] is not None:
-            ordered_data_frames.append((indicator_name, data_frames[indicator_name]))
+      if indicator_name in data_frames and data_frames[indicator_name] is not None:
+        ordered_data_frames.append(
+          (indicator_name, data_frames[indicator_name]))
 
     # Determine number of rows for subplots
     num_plots = len(ordered_data_frames)
@@ -258,20 +277,21 @@ def index():
     fig.suptitle(f"Key US Economic Indicators (Last {time_range})")
 
     for ax, (name, df) in zip(axes.flatten(), ordered_data_frames):
-        if df is not None:
-            if name == "Treasury Yields":
-                for col in df.columns:
-                    ax.plot(df.index, df[col], label=col + " Treasury Yield", linewidth=1)
-            else:
-                ax.plot(df.index, df["value"], label=name, linewidth=1)
-            ax.set_title(name)
-            ax.set_ylabel("Value")
-            ax.legend()
-            ax.grid(True)
+      if df is not None:
+        if name == "Treasury Yields":
+          for col in df.columns:
+            ax.plot(df.index, df[col], label=col +
+                    " Treasury Yield", linewidth=1)
+        else:
+          ax.plot(df.index, df["value"], label=name, linewidth=1)
+        ax.set_title(name)
+        ax.set_ylabel("Value")
+        ax.legend()
+        ax.grid(True)
 
     # Hide any unused subplots
     for i in range(num_plots, nrows * 2):
-        fig.delaxes(axes.flatten()[i])
+      fig.delaxes(axes.flatten()[i])
 
   plt.tight_layout(rect=[0, 0, 1, 0.96])
 
