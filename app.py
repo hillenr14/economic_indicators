@@ -20,10 +20,10 @@ load_dotenv()
 app = Flask(__name__)
 
 # Database Configuration
-DB_HOST = os.getenv("MYSQL_HOST")
-DB_USER = os.getenv("MYSQL_USER")
-DB_PASSWORD = os.getenv("MYSQL_PASSWORD")
-DB_NAME = os.getenv("MYSQL_DB")
+DB_HOST = os.environ.get("MYSQL_HOST")
+DB_USER = os.environ.get("MYSQL_USER")
+DB_PASSWORD = os.environ.get("MYSQL_PASSWORD")
+DB_NAME = os.environ.get("MYSQL_DB")
 
 # FRED API Key
 FRED_API_KEY = "32d1fa37c639637c4fbf10df162df251"
@@ -99,11 +99,17 @@ def get_start_date(time_range):
 
 
 def fetch_sp500_data(start_date):
-  sp500 = yf.Ticker("^GSPC")
-  df = sp500.history(start=start_date)
-  df = df[["Close"]].rename(columns={"Close": "value"})
-  df.index = pd.to_datetime(df.index)
-  return df
+  try:
+    today = datetime.today().strftime('%Y-%m-%d')
+    sp500 = yf.Ticker("^GSPC")
+    df = sp500.history(start=start_date, end=today)
+    if df.empty:
+      return None
+    df = df[["Close"]].rename(columns={"Close": "value"})
+    df.index = pd.to_datetime(df.index)
+    return df
+  except Exception:
+    return None
 
 
 def fetch_fred_data(series_id, start_date):
@@ -127,35 +133,54 @@ def fetch_fred_data(series_id, start_date):
     return None
 
 
-def refresh_data_in_background():
-  def refresh():
-    conn = mysql.connector.connect(
+def refresh_data(indicator_names=None):
+  conn = mysql.connector.connect(
       host=DB_HOST, user=DB_USER, password=DB_PASSWORD, database=DB_NAME)
-    cursor = conn.cursor()
+  cursor = conn.cursor()
 
-    start_date = (datetime.today() - timedelta(days=20 * 365)
-                  ).strftime('%Y-%m-%d')
+  start_date = (datetime.today() - timedelta(days=20 * 365)
+                ).strftime('%Y-%m-%d')
 
-    for name, series_id in INDICATORS.items():
-      if name == "S&P 500 Index":
-        df = fetch_sp500_data(start_date)
-      else:
+  indicators_to_fetch = INDICATORS
+  if indicator_names:
+      indicators_to_fetch = {name: INDICATORS[name] for name in indicator_names if name in INDICATORS}
+
+  for name, series_id in indicators_to_fetch.items():
+    df = None
+    if name == "S&P 500 Index":
+      df = fetch_sp500_data(start_date)
+      if df is None:  # Fallback to FRED if yfinance fails
         df = fetch_fred_data(series_id, start_date)
+    else:
+      df = fetch_fred_data(series_id, start_date)
 
-      if df is not None:
-        for date, row in df.iterrows():
-          cursor.execute("""
-                        INSERT INTO economic_data (indicator_name, date, value)
-                        VALUES (%s, %s, %s)
-                        ON DUPLICATE KEY UPDATE value = %s
-                    """, (name, date.date(), row['value'], row['value']))
+    if df is not None:
+      for date, row in df.iterrows():
+        cursor.execute("""
+                      INSERT INTO economic_data (indicator_name, date, value)
+                      VALUES (%s, %s, %s)
+                      ON DUPLICATE KEY UPDATE value = %s
+                  """, (name, date.date(), row['value'], row['value']))
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+  conn.commit()
+  cursor.close()
+  conn.close()
 
-  thread = Thread(target=refresh)
+
+def refresh_data_in_background(indicator_names=None):
+  thread = Thread(target=refresh_data, args=(indicator_names,))
   thread.start()
+
+
+def get_present_indicators():
+  conn = mysql.connector.connect(
+      host=DB_HOST, user=DB_USER, password=DB_PASSWORD, database=DB_NAME)
+  cursor = conn.cursor()
+  cursor.execute("SELECT DISTINCT indicator_name FROM economic_data")
+  present_indicators = {row[0] for row in cursor.fetchall()}
+  cursor.close()
+  conn.close()
+  return present_indicators
 
 
 def get_data_from_db(time_range):
@@ -177,7 +202,7 @@ def get_data_from_db(time_range):
       if time_range in ['3y', '5y'] and (name == "S&P 500 Index" or "Treasury Yield" in name):
         df = df.resample('W').last()
       if time_range in ['10y', '20y'] and (name == "S&P 500 Index" or "Treasury Yield" in name):
-        df = df.resample('M').last()
+        df = df.resample('ME').last()
       data_frames[name] = df
 
   cursor.close()
@@ -204,15 +229,18 @@ def needs_refresh():
 def index():
   create_database_and_tables()
 
+  present_indicators = get_present_indicators()
+  all_indicators = set(INDICATORS.keys())
+  missing_indicators = all_indicators - present_indicators
+
+  if missing_indicators:
+    refresh_data(missing_indicators)
+
   if needs_refresh():
     refresh_data_in_background()
 
   time_range = request.args.get('time_range', '5y')
   data_frames = get_data_from_db(time_range)
-
-  if not data_frames:
-    refresh_data_in_background()
-    data_frames = get_data_from_db(time_range)
 
   if "PCE (Inflation)" in data_frames and data_frames["PCE (Inflation)"] is not None:
     df_pce = data_frames["PCE (Inflation)"].copy()
@@ -302,4 +330,4 @@ def index():
 
 
 if __name__ == '__main__':
-  app.run(debug=True)
+  app.run(debug=True, host='0.0.0.0', port=5001)

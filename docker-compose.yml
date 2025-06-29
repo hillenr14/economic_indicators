@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "5001:5001"
+    volumes:
+      - .:/app
+    depends_on:
+      - db
+    environment:
+      MYSQL_HOST: db
+      MYSQL_USER: hillenr
+      MYSQL_PASSWORD: robert14
+      MYSQL_DB: historical_data
+
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password # Change this to a strong password
+      MYSQL_DATABASE: historical_data
+      MYSQL_USER: hillenr
+      MYSQL_PASSWORD: robert14
+    volumes:
+      - db_data:/var/lib/mysql
+
+volumes:
+  db_data:
