@@ -1,7 +1,9 @@
-flask
-requests
-pandas
-matplotlib
 yfinance
+matplotlib
+pandas
+requests
+flask
 mysql-connector-python
-python-dotenv
+dotenv
+apscheduler
+pytz

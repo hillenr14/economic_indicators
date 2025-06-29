@@ -1,9 +1,8 @@
-
 import yfinance as yf
 import matplotlib.pyplot as plt
 import pandas as pd
 import requests
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, Response
 from threading import Thread
 import mysql.connector
 from dotenv import load_dotenv
@@ -12,8 +11,11 @@ from datetime import datetime, timedelta
 import base64
 from io import BytesIO
 import matplotlib
-matplotlib.use('Agg')
+from apscheduler.schedulers.background import BackgroundScheduler
+import pytz
+import time
 
+matplotlib.use('Agg')
 
 load_dotenv()
 
@@ -50,6 +52,7 @@ INDICATORS = {
     "Producer Price Index": "PPIACO"
 }
 
+update_event = Thread()
 
 def get_db_connection():
   conn = mysql.connector.connect(
@@ -58,7 +61,6 @@ def get_db_connection():
       password=DB_PASSWORD
   )
   return conn
-
 
 def create_database_and_tables():
   conn = get_db_connection()
@@ -79,7 +81,6 @@ def create_database_and_tables():
   cursor.close()
   conn.close()
 
-
 def get_start_date(time_range):
   today = datetime.today()
   if time_range == '3m':
@@ -97,7 +98,6 @@ def get_start_date(time_range):
   else:
     return (today - timedelta(days=5 * 365)).strftime('%Y-%m-%d')
 
-
 def fetch_sp500_data(start_date):
   try:
     today = datetime.today().strftime('%Y-%m-%d')
@@ -110,7 +110,6 @@ def fetch_sp500_data(start_date):
     return df
   except Exception:
     return None
-
 
 def fetch_fred_data(series_id, start_date):
   url = f"https://api.stlouisfed.org/fred/series/observations"
@@ -132,56 +131,41 @@ def fetch_fred_data(series_id, start_date):
   else:
     return None
 
-
 def refresh_data(indicator_names=None):
+  global update_event
   conn = mysql.connector.connect(
       host=DB_HOST, user=DB_USER, password=DB_PASSWORD, database=DB_NAME)
-  cursor = conn.cursor()
+  cursor = conn.cursor(dictionary=True)
 
-  start_date = (datetime.today() - timedelta(days=20 * 365)
-                ).strftime('%Y-%m-%d')
+  start_date = (datetime.today() - timedelta(days=20 * 365)).strftime('%Y-%m-%d')
 
   indicators_to_fetch = INDICATORS
   if indicator_names:
       indicators_to_fetch = {name: INDICATORS[name] for name in indicator_names if name in INDICATORS}
 
+  updated = False
   for name, series_id in indicators_to_fetch.items():
     df = None
     if name == "S&P 500 Index":
       df = fetch_sp500_data(start_date)
-      if df is None:  # Fallback to FRED if yfinance fails
+      if df is None:
         df = fetch_fred_data(series_id, start_date)
     else:
       df = fetch_fred_data(series_id, start_date)
 
     if df is not None:
       for date, row in df.iterrows():
-        cursor.execute("""
-                      INSERT INTO economic_data (indicator_name, date, value)
-                      VALUES (%s, %s, %s)
-                      ON DUPLICATE KEY UPDATE value = %s
-                  """, (name, date.date(), row['value'], row['value']))
+        cursor.execute("SELECT value FROM economic_data WHERE indicator_name = %s AND date = %s", (name, date.date()))
+        existing_record = cursor.fetchone()
+        if not existing_record or existing_record['value'] != row['value']:
+          cursor.execute("INSERT INTO economic_data (indicator_name, date, value) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE value = %s", (name, date.date(), row['value'], row['value']))
+          updated = True
 
   conn.commit()
   cursor.close()
   conn.close()
-
-
-def refresh_data_in_background(indicator_names=None):
-  thread = Thread(target=refresh_data, args=(indicator_names,))
-  thread.start()
-
-
-def get_present_indicators():
-  conn = mysql.connector.connect(
-      host=DB_HOST, user=DB_USER, password=DB_PASSWORD, database=DB_NAME)
-  cursor = conn.cursor()
-  cursor.execute("SELECT DISTINCT indicator_name FROM economic_data")
-  present_indicators = {row[0] for row in cursor.fetchall()}
-  cursor.close()
-  conn.close()
-  return present_indicators
-
+  if updated:
+    update_event.set()
 
 def get_data_from_db(time_range):
   conn = mysql.connector.connect(
@@ -209,36 +193,8 @@ def get_data_from_db(time_range):
   conn.close()
   return data_frames
 
-
-def needs_refresh():
-  conn = mysql.connector.connect(
-    host=DB_HOST, user=DB_USER, password=DB_PASSWORD, database=DB_NAME)
-  cursor = conn.cursor()
-  cursor.execute(
-    "SELECT last_updated FROM economic_data ORDER BY last_updated DESC LIMIT 1")
-  last_updated = cursor.fetchone()
-  cursor.close()
-  conn.close()
-
-  if not last_updated or (datetime.now() - last_updated[0]) > timedelta(weeks=1):
-    return True
-  return False
-
-
 @app.route('/')
 def index():
-  create_database_and_tables()
-
-  present_indicators = get_present_indicators()
-  all_indicators = set(INDICATORS.keys())
-  missing_indicators = all_indicators - present_indicators
-
-  if missing_indicators:
-    refresh_data(missing_indicators)
-
-  if needs_refresh():
-    refresh_data_in_background()
-
   time_range = request.args.get('time_range', '5y')
   data_frames = get_data_from_db(time_range)
 
@@ -253,73 +209,73 @@ def index():
     data_frames["GDP Change"] = df_gdp[["value"]]
 
   # Combine Treasury Yields
-    treasury_yields = {}
-    if "2-Year Treasury Yield" in data_frames and data_frames["2-Year Treasury Yield"] is not None:
-      treasury_yields["2-Year"] = data_frames["2-Year Treasury Yield"]["value"]
-      del data_frames["2-Year Treasury Yield"]
-    if "10-Year Treasury Yield" in data_frames and data_frames["10-Year Treasury Yield"] is not None:
-      treasury_yields["10-Year"] = data_frames["10-Year Treasury Yield"]["value"]
-      del data_frames["10-Year Treasury Yield"]
-    if "20-Year Treasury Yield" in data_frames and data_frames["20-Year Treasury Yield"] is not None:
-      treasury_yields["20-Year"] = data_frames["20-Year Treasury Yield"]["value"]
-      del data_frames["20-Year Treasury Yield"]
+  treasury_yields = {}
+  if "2-Year Treasury Yield" in data_frames and data_frames["2-Year Treasury Yield"] is not None:
+    treasury_yields["2-Year"] = data_frames["2-Year Treasury Yield"]["value"]
+    del data_frames["2-Year Treasury Yield"]
+  if "10-Year Treasury Yield" in data_frames and data_frames["10-Year Treasury Yield"] is not None:
+    treasury_yields["10-Year"] = data_frames["10-Year Treasury Yield"]["value"]
+    del data_frames["10-Year Treasury Yield"]
+  if "20-Year Treasury Yield" in data_frames and data_frames["20-Year Treasury Yield"] is not None:
+    treasury_yields["20-Year"] = data_frames["20-Year Treasury Yield"]["value"]
+    del data_frames["20-Year Treasury Yield"]
 
-    if treasury_yields:
-      df_treasury = pd.DataFrame(treasury_yields)
-      data_frames["Treasury Yields"] = df_treasury
+  if treasury_yields:
+    df_treasury = pd.DataFrame(treasury_yields)
+    data_frames["Treasury Yields"] = df_treasury
 
-    # Define the desired plot order
-    PLOT_ORDER = [
-        "GDP",
-        "GDP Change",
-        "PCE (Inflation)",
-        "Inflation Rate",
-        "S&P 500 Index",
-        "Treasury Yields",
-        "Unemployment Rate",
-        "Initial Jobless Claims",
-        "Corporate Profits",
-        "Industrial Production",
-        "Consumer Sentiment",
-        "Retail Sales",
-        "Federal Funds Rate",
-        "M2 Money Supply",
-        "ISM Manufacturing PMI",
-        "Producer Price Index"
-        "Housing Starts",
-        "Trade Balance",
-    ]
+  # Define the desired plot order
+  PLOT_ORDER = [
+      "GDP",
+      "GDP Change",
+      "PCE (Inflation)",
+      "Inflation Rate",
+      "S&P 500 Index",
+      "Treasury Yields",
+      "Unemployment Rate",
+      "Initial Jobless Claims",
+      "Corporate Profits",
+      "Industrial Production",
+      "Consumer Sentiment",
+      "Retail Sales",
+      "Federal Funds Rate",
+      "M2 Money Supply",
+      "ISM Manufacturing PMI",
+      "Producer Price Index",
+      "Housing Starts",
+      "Trade Balance",
+  ]
 
-    # Filter and order data_frames based on PLOT_ORDER
-    ordered_data_frames = []
-    for indicator_name in PLOT_ORDER:
-      if indicator_name in data_frames and data_frames[indicator_name] is not None:
-        ordered_data_frames.append(
-          (indicator_name, data_frames[indicator_name]))
+  # Filter and order data_frames based on PLOT_ORDER
+  ordered_data_frames = []
+  for indicator_name in PLOT_ORDER:
+    if indicator_name in data_frames and data_frames[indicator_name] is not None:
+      ordered_data_frames.append(
+        (indicator_name, data_frames[indicator_name]))
 
-    # Determine number of rows for subplots
-    num_plots = len(ordered_data_frames)
-    nrows = (num_plots + 1) // 2  # Calculate rows needed for 2 columns
+  # Determine number of rows for subplots
+  num_plots = len(ordered_data_frames)
+  nrows = (num_plots + 1) // 2  # Calculate rows needed for 2 columns
 
-    fig, axes = plt.subplots(nrows=nrows, ncols=2, figsize=(16, nrows * 4))
-    fig.suptitle(f"Key US Economic Indicators (Last {time_range})")
+  fig, axes = plt.subplots(nrows=nrows, ncols=2, figsize=(16, nrows * 4))
+  fig.suptitle(f"Key US Economic Indicators (Last {time_range})")
 
-    for ax, (name, df) in zip(axes.flatten(), ordered_data_frames):
-      if df is not None:
-        if name == "Treasury Yields":
-          for col in df.columns:
-            ax.plot(df.index, df[col], label=col +
-                    " Treasury Yield", linewidth=1)
-        else:
-          ax.plot(df.index, df["value"], label=name, linewidth=1)
-        ax.set_title(name)
-        ax.set_ylabel("Value")
-        ax.legend()
-        ax.grid(True)
+  for ax, (name, df) in zip(axes.flatten(), ordered_data_frames):
+    if df is not None:
+      if name == "Treasury Yields":
+        for col in df.columns:
+          ax.plot(df.index, df[col], label=col +
+                  " Treasury Yield", linewidth=1)
+      else:
+        ax.plot(df.index, df["value"], label=name, linewidth=1)
+      ax.set_title(name)
+      ax.set_ylabel("Value")
+      ax.legend()
+      ax.grid(True)
 
-    # Hide any unused subplots
-    for i in range(num_plots, nrows * 2):
-      fig.delaxes(axes.flatten()[i])
+  # Hide any unused subplots
+  for i in range(num_plots, nrows * 2):
+    fig.delaxes(axes.flatten()[i])
 
   plt.tight_layout(rect=[0, 0, 1, 0.96])
 
@@ -328,6 +284,25 @@ def index():
   data = base64.b64encode(buf.getbuffer()).decode("ascii")
   return render_template('index.html', plot_url=data, selected_time_range=time_range)
 
+@app.route('/subscribe')
+def subscribe():
+    def event_stream():
+        global update_event
+        while True:
+            update_event.wait()
+            yield "data: refresh\n\n"
+            update_event.clear()
+    return Response(event_stream(), mimetype='text/event-stream')
+
+def initial_db_load():
+    create_database_and_tables()
+    print("Performing initial data load...")
+    refresh_data()
+    print("Initial data load complete.")
 
 if __name__ == '__main__':
+  initial_db_load()
+  scheduler = BackgroundScheduler(timezone=pytz.timezone('US/Eastern'))
+  scheduler.add_job(refresh_data, 'cron', hour=16)
+  scheduler.start()
   app.run(debug=True, host='0.0.0.0', port=5001)

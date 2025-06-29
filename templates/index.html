@@ -18,5 +18,13 @@
     </form>
     <br>
     <img src="data:image/png;base64,{{ plot_url }}" alt="Economic Indicators Plot">
+    <script>
+        const eventSource = new EventSource("/subscribe");
+        eventSource.onmessage = function(event) {
+            if (event.data === "refresh") {
+                location.reload();
+            }
+        };
+    </script>
 </body>
 </html>
