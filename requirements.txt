@@ -3,3 +3,5 @@ requests
 pandas
 matplotlib
 yfinance
+mysql-connector-python
+python-dotenv
