@@ -27,16 +27,26 @@ try:
     cursor = conn.cursor()
 
     if args.indicator:
-        # Delete entries for a specific indicator
-        query = "DELETE FROM economic_data WHERE indicator_name = %s"
-        cursor.execute(query, (args.indicator,))
-        conn.commit()
-        print(f"All entries for indicator '{args.indicator}' have been deleted.")
+        # Get the indicator_id
+        cursor.execute("SELECT id FROM indicators WHERE name = %s", (args.indicator,))
+        indicator_id = cursor.fetchone()
+
+        if indicator_id:
+            indicator_id = indicator_id[0]
+            # Delete entries for a specific indicator from historical_data
+            cursor.execute("DELETE FROM historical_data WHERE indicator_id = %s", (indicator_id,))
+            # Delete the indicator from the indicators table
+            cursor.execute("DELETE FROM indicators WHERE id = %s", (indicator_id,))
+            conn.commit()
+            print(f"All entries for indicator '{args.indicator}' have been deleted.")
+        else:
+            print(f"Indicator '{args.indicator}' not found.")
     else:
-        # Truncate the entire table
-        cursor.execute("TRUNCATE TABLE economic_data")
+        # Truncate both tables (order matters due to foreign key constraint)
+        cursor.execute("TRUNCATE TABLE historical_data")
+        cursor.execute("TRUNCATE TABLE indicators")
         conn.commit()
-        print("Table 'economic_data' has been successfully emptied.")
+        print("Tables 'historical_data' and 'indicators' have been successfully emptied.")
 
     # Clean up
     cursor.close()

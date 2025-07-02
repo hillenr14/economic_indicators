@@ -24,6 +24,10 @@ services:
       MYSQL_PASSWORD: robert14
     volumes:
       - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "hillenr", "-probert14"]
+      timeout: 20s
+      retries: 10
 
 volumes:
   db_data:

@@ -12,15 +12,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application code into the container at /app
 COPY . .
+RUN chmod +x wait-for-it.sh
 
-# Expose the port that the Flask app runs on
-EXPOSE 5001
-
-# Define environment variables for MySQL connection
-ENV MYSQL_HOST=db
-ENV MYSQL_USER=hillenr
-ENV MYSQL_PASSWORD=robert14
-ENV MYSQL_DB=historical_data
-
-# Run the Flask application
 CMD ["python", "app.py"]
